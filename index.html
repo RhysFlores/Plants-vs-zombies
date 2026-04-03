@@ -1,31 +1,3 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta content="width=device-width,initial-scale=1" name="viewport">
-<title>PvZ Portable — Web</title>
-<script src="https://cdn.jsdelivr.net/npm/jszip@3/dist/jszip.min.js"></script>
-<style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{background:#1a1a2e;color:#eee;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;min-height:100vh}
-body.upload-mode{display:flex;flex-direction:column;align-items:stretch;justify-content:center;overflow-x:hidden;overflow-y:auto}
-body.game-mode{overflow:hidden}
-#canvas-container{display:none;width:100vw;height:100vh;position:fixed;inset:0;justify-content:center;align-items:center;background:#000;overflow:hidden}
-#canvas-container:fullscreen{width:100%;height:100%}
-canvas#canvas{display:block;background:#000;outline:0}
-</style>
-</head>
-<body class="upload-mode">
-
-<div id="upload-screen">
-  <h1>PvZ Portable — Web</h1>
-  <p>Automatically loading resources...</p>
-</div>
-
-<div id="canvas-container">
-  <canvas id="canvas" width="800" height="600" tabindex="0"></canvas>
-</div>
-
 <script>
 "use strict";
 
@@ -41,11 +13,46 @@ window.moduleReadyPromise = new Promise((resolve, reject) => {
 var Module = {
   canvas: canvas,
   noInitialRun: true,
-  onRuntimeInitialized: function() { window._resolveModuleReady(); },
+  onRuntimeInitialized: async function() {
+    try {
+      // Mount persistent filesystem
+      Module.FS.mkdir('/persistent');
+      Module.FS.mount(Module.IDBFS, {}, '/persistent');
+
+      // Load saved data
+      await new Promise((res, rej) => {
+        Module.FS.syncfs(true, function (err) {
+          if (err) rej(err);
+          else res();
+        });
+      });
+
+      console.log("Save data loaded");
+      window._resolveModuleReady();
+    } catch (e) {
+      console.error("FS init failed", e);
+      window._rejectModuleReady(e);
+    }
+  },
   onAbort: function(e) { window._rejectModuleReady(new Error(e)); },
   print: console.log,
   printErr: console.warn
 };
+
+// Save function
+function saveGame() {
+  if (!gameStarted) return;
+  Module.FS.syncfs(false, function (err) {
+    if (err) console.error("Save failed", err);
+    else console.log("Game saved");
+  });
+}
+
+// Auto-save every 10 seconds
+setInterval(saveGame, 10000);
+
+// Save when leaving page
+window.addEventListener("beforeunload", saveGame);
 
 function normalizeResourcePath(path) {
   const parts = path.replace(/\\/g,"/").split("/").filter(Boolean);
@@ -57,13 +64,11 @@ function normalizeResourcePath(path) {
 // Fetch and load main.pak and properties files
 async function autoLoadResources() {
   try {
-    // Load main.pak
     const pakResp = await fetch("main.pak");
     if(!pakResp.ok) throw new Error("main.pak not found");
     const pakData = await pakResp.arrayBuffer();
     collectedFiles.set("main.pak", new File([pakData], "main.pak"));
 
-    // Load properties folder files
     const propertyFiles = ["partner.xml","partner.xml.sig","partner.xml.sig2","partner_logo.jpg"];
     for(const f of propertyFiles){
       const resp = await fetch("properties/" + f);
@@ -91,7 +96,7 @@ async function startGame() {
 
   await window.moduleReadyPromise;
 
-  // Write files to Emscripten FS
+  // Write files to FS
   for(const [path, file] of collectedFiles.entries()){
     const data = new Uint8Array(await file.arrayBuffer());
     const parts = path.split("/");
@@ -103,15 +108,10 @@ async function startGame() {
     Module.FS.writeFile("/"+path, data);
   }
 
-  // Launch game
   Module.callMain([]);
   gameStarted = true;
 }
 
-// Start auto-load on page load
+// Start auto-load
 autoLoadResources();
 </script>
-
-<script src="pvz-portable.js" async></script>
-</body>
-</html>
