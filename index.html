@@ -4,65 +4,58 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>PvZ Portable — Web</title>
-<script src="https://cdn.jsdelivr.net/npm/jszip@3/dist/jszip.min.js"></script>
 <style>
-/* Basic styles omitted for brevity, keep your existing CSS */
-body { background:#1a1a2e;color:#eee;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; min-height:100vh; }
-body.game-mode{overflow:hidden;}
-#canvas-container{display:flex;width:100vw;height:100vh;position:fixed;inset:0;justify-content:center;align-items:center;background:#000;}
-canvas#canvas{display:block;background:#000;outline:0;}
+body{background:#1a1a2e;color:#eee;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;margin:0;height:100vh;overflow:hidden}
+#canvas-container{display:flex;width:100vw;height:100vh;justify-content:center;align-items:center;background:#000}
+canvas#canvas{display:block;background:#000;outline:0}
 </style>
 </head>
-<body class="game-mode">
+<body>
 <div id="canvas-container">
   <canvas id="canvas" width="800" height="600" tabindex="0"></canvas>
 </div>
 
 <script>
 "use strict";
+
 var Module = {
   canvas: document.getElementById("canvas"),
   noInitialRun: true,
   onRuntimeInitialized: async function() {
-    // Load main.pak and properties/ automatically
     const collectedFiles = new Map();
 
-    async function loadFile(path) {
-      const response = await fetch(path);
-      if (!response.ok) throw new Error("Failed to load " + path);
-      const buffer = await response.arrayBuffer();
-      collectedFiles.set(path, new File([buffer], path.split("/").pop()));
+    async function fetchAndAdd(path) {
+      try {
+        const res = await fetch(path);
+        if (!res.ok) throw new Error("Failed to fetch " + path);
+        const buf = await res.arrayBuffer();
+        collectedFiles.set(path, new File([buf], path.split("/").pop()));
+        console.log("Loaded:", path);
+      } catch(e) {
+        console.error(e);
+      }
     }
 
-    // List of files to load
-    const filesToLoad = ["main.pak"];
-    // Add all properties/ files dynamically
-    async function fetchPropertiesList() {
-      // Simple hack: hardcode names you have in properties/
-      // Example: ["properties/image1.png", "properties/sound1.wav"]
-      return [
-        "properties/1",
-        "properties/2",
-        "properties/3",
-        "properties/4"
-      ];
-    }
+    // Always load main.pak
+    await fetchAndAdd("main.pak");
 
-    filesToLoad.push(...await fetchPropertiesList());
+    // Load all expected properties files (from the original upload UI)
+    const propertyFiles = [
+      "properties/1",
+      "properties/2",
+      "properties/3",
+      "properties/4"
+    ];
 
-    // Fetch all files
-    for (let file of filesToLoad) {
-      await loadFile(file);
-      console.log("Loaded:", file);
-    }
+    for (let file of propertyFiles) await fetchAndAdd(file);
 
-    // Write files into Emscripten FS
+    // Write into Emscripten FS
     for (let [path, file] of collectedFiles) {
-      let segments = path.split("/");
+      const parts = path.split("/");
       let dir = "/";
-      for (let i = 0; i < segments.length - 1; i++) {
-        dir += (i === 0 ? "" : "/") + segments[i];
-        try { Module.FS.mkdir(dir); } catch(e){ /* ignore if exists */ }
+      for (let i = 0; i < parts.length - 1; i++) {
+        dir += (i === 0 ? "" : "/") + parts[i];
+        try { Module.FS.mkdir(dir); } catch(e){/* ignore if exists */}
       }
       const data = new Uint8Array(await file.arrayBuffer());
       Module.FS.writeFile("/" + path, data);
@@ -76,7 +69,7 @@ var Module = {
   onAbort: function(err) { console.error(err); }
 };
 
-// Load your game JS
+// Load the game JS
 var script = document.createElement("script");
 script.src = "pvz-portable.js";
 script.async = true;
