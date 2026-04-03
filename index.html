@@ -1,1 +1,117 @@
-<!doctype html> <html lang="en"> <head> <meta charset="utf-8"> <meta content="width=device-width,initial-scale=1" name="viewport"> <title>PvZ Portable — Web</title> <script src="https://cdn.jsdelivr.net/npm/jszip@3/dist/jszip.min.js"></script> <style> *{box-sizing:border-box;margin:0;padding:0} body{background:#1a1a2e;color:#eee;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;min-height:100vh} body.upload-mode{display:flex;flex-direction:column;align-items:stretch;justify-content:center;overflow-x:hidden;overflow-y:auto} body.game-mode{overflow:hidden} #canvas-container{display:none;width:100vw;height:100vh;position:fixed;inset:0;justify-content:center;align-items:center;background:#000;overflow:hidden} #canvas-container:fullscreen{width:100%;height:100%} canvas#canvas{display:block;background:#000;outline:0} </style> </head> <body class="upload-mode"> <div id="upload-screen"> <h1>PvZ Portable — Web</h1> <p>Automatically loading resources...</p> </div> <div id="canvas-container"> <canvas id="canvas" width="800" height="600" tabindex="0"></canvas> </div> <script> "use strict"; let collectedFiles = new Map(); let hasPak = false, hasProperties = false, gameStarted = false; const canvas = document.getElementById("canvas"); window.moduleReadyPromise = new Promise((resolve, reject) => { window._resolveModuleReady = resolve; window._rejectModuleReady = reject; }); var Module = { canvas: canvas, noInitialRun: true, onRuntimeInitialized: function() { window._resolveModuleReady(); }, onAbort: function(e) { window._rejectModuleReady(new Error(e)); }, print: console.log, printErr: console.warn }; function normalizeResourcePath(path) { const parts = path.replace(/\\/g,"/").split("/").filter(Boolean); if(parts.length === 0) return ""; if(parts[0] === "main.pak" || parts[0] === "properties") return parts.join("/"); return parts.length > 1 ? parts.slice(1).join("/") : parts[0]; } // Fetch and load main.pak and properties files async function autoLoadResources() { try { // Load main.pak const pakResp = await fetch("main.pak"); if(!pakResp.ok) throw new Error("main.pak not found"); const pakData = await pakResp.arrayBuffer(); collectedFiles.set("main.pak", new File([pakData], "main.pak")); // Load properties folder files const propertyFiles = ["partner.xml","partner.xml.sig","partner.xml.sig2","partner_logo.jpg"]; for(const f of propertyFiles){ const resp = await fetch("properties/" + f); if(!resp.ok) throw new Error("properties/"+f+" not found"); const buf = await resp.arrayBuffer(); collectedFiles.set("properties/" + f, new File([buf], f)); } hasPak = collectedFiles.has("main.pak"); hasProperties = propertyFiles.every(f => collectedFiles.has("properties/" + f)); if(hasPak && hasProperties) startGame(); else throw new Error("Required files missing"); } catch(e) { document.getElementById("upload-screen").innerHTML = "<p style='color:red;'>Failed to load resources: "+e.message+"</p>"; console.error(e); } } async function startGame() { document.body.classList.remove("upload-mode"); document.body.classList.add("game-mode"); document.getElementById("upload-screen").style.display="none"; document.getElementById("canvas-container").style.display="flex"; await window.moduleReadyPromise; // Write files to Emscripten FS for(const [path, file] of collectedFiles.entries()){ const data = new Uint8Array(await file.arrayBuffer()); const parts = path.split("/"); let dir = "/"; for(let i=0;i<parts.length-1;i++){ dir += (dir==="/"?"":"/")+parts[i]; try{ Module.FS.mkdir(dir); } catch(e) {} } Module.FS.writeFile("/"+path, data); } // Launch game Module.callMain([]); gameStarted = true; } // Start auto-load on page load autoLoadResources(); </script> <script src="pvz-portable.js" async></script> </body> </html>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta content="width=device-width,initial-scale=1" name="viewport">
+<title>PvZ Portable — Web</title>
+<script src="https://cdn.jsdelivr.net/npm/jszip@3/dist/jszip.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#1a1a2e;color:#eee;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;min-height:100vh}
+body.upload-mode{display:flex;flex-direction:column;align-items:stretch;justify-content:center;overflow-x:hidden;overflow-y:auto}
+body.game-mode{overflow:hidden}
+#canvas-container{display:none;width:100vw;height:100vh;position:fixed;inset:0;justify-content:center;align-items:center;background:#000;overflow:hidden}
+#canvas-container:fullscreen{width:100%;height:100%}
+canvas#canvas{display:block;background:#000;outline:0}
+</style>
+</head>
+<body class="upload-mode">
+
+<div id="upload-screen">
+  <h1>PvZ Portable — Web</h1>
+  <p>Automatically loading resources...</p>
+</div>
+
+<div id="canvas-container">
+  <canvas id="canvas" width="800" height="600" tabindex="0"></canvas>
+</div>
+
+<script>
+"use strict";
+
+let collectedFiles = new Map();
+let hasPak = false, hasProperties = false, gameStarted = false;
+const canvas = document.getElementById("canvas");
+
+window.moduleReadyPromise = new Promise((resolve, reject) => {
+  window._resolveModuleReady = resolve;
+  window._rejectModuleReady = reject;
+});
+
+var Module = {
+  canvas: canvas,
+  noInitialRun: true,
+  onRuntimeInitialized: function() { window._resolveModuleReady(); },
+  onAbort: function(e) { window._rejectModuleReady(new Error(e)); },
+  print: console.log,
+  printErr: console.warn
+};
+
+function normalizeResourcePath(path) {
+  const parts = path.replace(/\\/g,"/").split("/").filter(Boolean);
+  if(parts.length === 0) return "";
+  if(parts[0] === "main.pak" || parts[0] === "properties") return parts.join("/");
+  return parts.length > 1 ? parts.slice(1).join("/") : parts[0];
+}
+
+// Fetch and load main.pak and properties files
+async function autoLoadResources() {
+  try {
+    // Load main.pak
+    const pakResp = await fetch("main.pak");
+    if(!pakResp.ok) throw new Error("main.pak not found");
+    const pakData = await pakResp.arrayBuffer();
+    collectedFiles.set("main.pak", new File([pakData], "main.pak"));
+
+    // Load properties folder files
+    const propertyFiles = ["partner.xml","partner.xml.sig","partner.xml.sig2","partner_logo.jpg"];
+    for(const f of propertyFiles){
+      const resp = await fetch("properties/" + f);
+      if(!resp.ok) throw new Error("properties/"+f+" not found");
+      const buf = await resp.arrayBuffer();
+      collectedFiles.set("properties/" + f, new File([buf], f));
+    }
+
+    hasPak = collectedFiles.has("main.pak");
+    hasProperties = propertyFiles.every(f => collectedFiles.has("properties/" + f));
+
+    if(hasPak && hasProperties) startGame();
+    else throw new Error("Required files missing");
+  } catch(e) {
+    document.getElementById("upload-screen").innerHTML = "<p style='color:red;'>Failed to load resources: "+e.message+"</p>";
+    console.error(e);
+  }
+}
+
+async function startGame() {
+  document.body.classList.remove("upload-mode");
+  document.body.classList.add("game-mode");
+  document.getElementById("upload-screen").style.display="none";
+  document.getElementById("canvas-container").style.display="flex";
+
+  await window.moduleReadyPromise;
+
+  // Write files to Emscripten FS
+  for(const [path, file] of collectedFiles.entries()){
+    const data = new Uint8Array(await file.arrayBuffer());
+    const parts = path.split("/");
+    let dir = "/";
+    for(let i=0;i<parts.length-1;i++){
+      dir += (dir==="/"?"":"/")+parts[i];
+      try{ Module.FS.mkdir(dir); } catch(e) {}
+    }
+    Module.FS.writeFile("/"+path, data);
+  }
+
+  // Launch game
+  Module.callMain([]);
+  gameStarted = true;
+}
+
+// Start auto-load on page load
+autoLoadResources();
+</script>
+
+<script src="pvz-portable.js" async></script>
+</body>
+</html>
