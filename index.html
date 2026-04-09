@@ -71,35 +71,14 @@ canvas#canvas{display:block;background:#000;outline:0}
 <script>
 "use strict";
 
-// PvZ save paths discovered from WASM strings:
-//   userdata/users.dat
-//   userdata/user%d.dat
-//   userdata/game%d_%d.dat
-//   userdata/game%d_%d.v4
-// All relative → resolve to /userdata/ in the Emscripten FS
+// Save files found in WASM binary:
+//   userdata/users.dat  userdata/user%d.dat
+//   userdata/game%d_%d.dat  userdata/game%d_%d.v4
 var SAVE_MOUNT = "/userdata";
 
 var collectedFiles = new Map();
-var hasPak = false, hasProperties = false, gameStarted = false;
+var gameStarted = false;
 var canvas = document.getElementById("canvas");
-
-var _resolveModuleReady, _rejectModuleReady;
-var moduleReadyPromise = new Promise(function(res, rej){
-  _resolveModuleReady = res;
-  _rejectModuleReady  = rej;
-});
-
-// Global Module — must exist before pvz-portable.js executes
-var Module = {
-  canvas: canvas,
-  noInitialRun: true,
-  onRuntimeInitialized: function(){ _resolveModuleReady(); },
-  onAbort: function(e){ _rejectModuleReady(new Error(String(e))); },
-  print:    console.log,
-  printErr: console.warn
-};
-
-// ── UI helpers ──────────────────────────────────────────────────────────────
 var saveBar   = document.getElementById("save-bar");
 var hoverZone = document.getElementById("save-hover-zone");
 var statusEl  = document.getElementById("save-status");
@@ -108,256 +87,174 @@ function showSaveBar(){ saveBar.classList.add("visible"); }
 function hideSaveBar(){ saveBar.classList.remove("visible"); }
 function setSaveStatus(t){ statusEl.textContent = t; }
 function toast(msg, ms){
-  ms = ms || 3000;
+  ms = ms||3000;
   var el = document.getElementById("sv-toast");
-  el.textContent = msg;
-  el.classList.add("show");
-  clearTimeout(el._t);
-  el._t = setTimeout(function(){ el.classList.remove("show"); }, ms);
+  el.textContent = msg; el.classList.add("show");
+  clearTimeout(el._t); el._t = setTimeout(function(){ el.classList.remove("show"); }, ms);
 }
-
 hoverZone.addEventListener("mouseenter", showSaveBar);
-saveBar.addEventListener("mouseenter",   showSaveBar);
-saveBar.addEventListener("mouseleave",   function(){ setTimeout(hideSaveBar, 800); });
+saveBar.addEventListener("mouseenter", showSaveBar);
+saveBar.addEventListener("mouseleave", function(){ setTimeout(hideSaveBar, 800); });
 
-// ── IDBFS sync helpers ──────────────────────────────────────────────────────
-// populate=true  → IDB → FS  (load saved data into memory)
-// populate=false → FS → IDB  (flush in-memory writes to IDB)
-function idbSync(populate, cb){
-  try{
-    Module.FS.syncfs(populate, function(err){
-      if(err) console.warn("FS.syncfs(populate="+populate+") error:", err);
-      cb(err);
-    });
-  } catch(e){
-    console.warn("FS.syncfs threw:", e);
-    cb(e);
-  }
+function flushToIDB(cb){
+  Module.FS.syncfs(false, function(err){
+    if(err) console.warn("flush error:", err);
+    else setSaveStatus("✅ Saved " + new Date().toLocaleTimeString());
+    cb && cb(err);
+  });
 }
 
 function listAllFiles(root){
-  var files = [];
+  var files=[];
   function walk(dir){
-    var entries;
-    try{ entries = Module.FS.readdir(dir); } catch(e){ return; }
-    for(var i = 0; i < entries.length; i++){
-      var name = entries[i];
-      if(name === "." || name === "..") continue;
-      var full = (dir === "/" ? "" : dir) + "/" + name;
-      var stat;
-      try{ stat = Module.FS.stat(full); } catch(e){ continue; }
-      if(Module.FS.isDir(stat.mode)) walk(full);
-      else files.push(full);
+    var entries; try{ entries=Module.FS.readdir(dir); }catch(e){ return; }
+    for(var i=0;i<entries.length;i++){
+      var n=entries[i]; if(n==="."||n==="..") continue;
+      var full=(dir==="/"?"":dir)+"/"+n;
+      var st; try{ st=Module.FS.stat(full); }catch(e){ continue; }
+      if(Module.FS.isDir(st.mode)) walk(full); else files.push(full);
     }
   }
-  walk(root);
-  return files;
+  walk(root); return files;
 }
 
-// ── Export ──────────────────────────────────────────────────────────────────
 document.getElementById("btn-export").addEventListener("click", async function(){
   setSaveStatus("⏳ Flushing…");
-  // First flush FS → IDB, then read files back out for ZIP
-  idbSync(false, async function(){
-    var files = listAllFiles(SAVE_MOUNT);
-    if(files.length === 0){
-      toast("⚠ No save files found yet — play a bit first!");
-      setSaveStatus("❌ No saves found");
-      return;
+  flushToIDB(async function(){
+    var files=listAllFiles(SAVE_MOUNT);
+    if(!files.length){ toast("⚠ No saves yet — play a bit first!"); setSaveStatus("❌ No saves"); return; }
+    var zip=new JSZip();
+    for(var i=0;i<files.length;i++){
+      try{ zip.file(files[i].replace(/^\//,""), Module.FS.readFile(files[i])); }catch(e){}
     }
-    var zip = new JSZip();
-    for(var i = 0; i < files.length; i++){
-      try{
-        var data = Module.FS.readFile(files[i]);
-        zip.file(files[i].replace(/^\//, ""), data);
-      } catch(e){ console.warn("Could not read", files[i], e); }
-    }
-    var blob = await zip.generateAsync({type:"blob"});
-    var url = URL.createObjectURL(blob);
-    var a = document.createElement("a");
-    a.href = url;
-    a.download = "pvz-save-" + new Date().toISOString().slice(0,10) + ".zip";
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-    toast("💾 Exported " + files.length + " save file(s)");
+    var blob=await zip.generateAsync({type:"blob"});
+    var a=document.createElement("a");
+    a.href=URL.createObjectURL(blob);
+    a.download="pvz-save-"+new Date().toISOString().slice(0,10)+".zip";
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    toast("💾 Exported "+files.length+" file(s)");
     setSaveStatus("✅ Exported");
   });
 });
 
-// ── Import ──────────────────────────────────────────────────────────────────
 document.getElementById("btn-import").addEventListener("click", function(){
   document.getElementById("import-file-input").click();
 });
 
 document.getElementById("import-file-input").addEventListener("change", async function(){
-  var file = this.files[0];
-  if(!file) return;
-  this.value = "";
+  var file=this.files[0]; if(!file) return; this.value="";
   setSaveStatus("⏳ Importing…");
   try{
-    var count = 0;
+    var count=0;
     if(file.name.endsWith(".zip")){
-      var zip = await JSZip.loadAsync(await file.arrayBuffer());
-      var promises = [];
-      zip.forEach(function(relPath, entry){
+      var zip=await JSZip.loadAsync(await file.arrayBuffer());
+      var promises=[];
+      zip.forEach(function(relPath,entry){
         if(entry.dir) return;
         promises.push(entry.async("uint8array").then(function(data){
-          // Accept paths like "userdata/..." or bare filenames
-          var absPath;
-          if(relPath.startsWith("userdata/") || relPath.startsWith("/userdata/")){
-            absPath = "/" + relPath.replace(/^\//, "");
-          } else {
-            absPath = SAVE_MOUNT + "/" + relPath;
-          }
-          absPath = absPath.replace(/\/+/g, "/");
-          ensureDirs(absPath);
-          Module.FS.writeFile(absPath, data);
-          count++;
+          var abs=relPath.match(/^(\/)?userdata\//) ? "/"+relPath.replace(/^\//,"") : SAVE_MOUNT+"/"+relPath;
+          abs=abs.replace(/\/+/g,"/");
+          var parts=abs.split("/").filter(Boolean), cur="";
+          for(var j=0;j<parts.length-1;j++){ cur+="/"+parts[j]; try{Module.FS.mkdir(cur);}catch(e){} }
+          Module.FS.writeFile(abs,data); count++;
         }));
       });
       await Promise.all(promises);
     } else {
-      var data = new Uint8Array(await file.arrayBuffer());
-      var absPath = SAVE_MOUNT + "/" + file.name;
-      ensureDirs(absPath);
-      Module.FS.writeFile(absPath, data);
-      count = 1;
+      var data=new Uint8Array(await file.arrayBuffer());
+      try{Module.FS.mkdir(SAVE_MOUNT);}catch(e){}
+      Module.FS.writeFile(SAVE_MOUNT+"/"+file.name,data); count=1;
     }
-    // Flush to IDB so it survives a refresh
-    idbSync(false, function(err){
-      if(err){
-        toast("⚠ Imported but IDB flush failed — may not persist");
-        setSaveStatus("⚠ Partial import");
-      } else {
-        toast("📂 Imported " + count + " file(s)! Refresh the page to apply.");
-        setSaveStatus("✅ Imported — refresh!");
-      }
+    flushToIDB(function(err){
+      if(err){ toast("⚠ Imported but couldn't persist"); setSaveStatus("⚠ Partial"); }
+      else { toast("📂 Imported "+count+" file(s)! Refresh to apply."); setSaveStatus("✅ Imported — refresh!"); }
     });
-  } catch(e){
-    console.error("Import error:", e);
-    toast("❌ Import failed: " + e.message);
-    setSaveStatus("❌ Import error");
-  }
+  }catch(e){ toast("❌ "+e.message); setSaveStatus("❌ Import error"); }
 });
 
-function ensureDirs(absPath){
-  var parts = absPath.split("/").filter(Boolean);
-  var cur = "";
-  for(var i = 0; i < parts.length - 1; i++){
-    cur += "/" + parts[i];
-    try{ Module.FS.mkdir(cur); } catch(e){}
-  }
-}
-
-// ── Clear ────────────────────────────────────────────────────────────────────
 document.getElementById("btn-clear").addEventListener("click", function(){
-  if(!confirm("Permanently delete all PvZ save data in this browser?\n(Export first to back it up.)")) return;
-  setSaveStatus("⏳ Clearing…");
-  try{
-    var files = listAllFiles(SAVE_MOUNT);
-    for(var i = 0; i < files.length; i++){
-      try{ Module.FS.unlink(files[i]); } catch(e){ console.warn("unlink", files[i], e); }
-    }
-    idbSync(false, function(){
-      toast("🗑 Save data cleared.");
-      setSaveStatus("🆕 No saves");
-    });
-  } catch(e){
-    toast("❌ Clear failed: " + e.message);
-    setSaveStatus("❌ Error");
-  }
+  if(!confirm("Delete all PvZ saves in this browser?\n(Export first to back up.)")) return;
+  var files=listAllFiles(SAVE_MOUNT);
+  for(var i=0;i<files.length;i++){ try{Module.FS.unlink(files[i]);}catch(e){} }
+  flushToIDB(function(){ toast("🗑 Saves cleared."); setSaveStatus("🆕 No saves"); });
 });
 
-// The game's own ASM_CONST already calls FS.syncfs(false) on shutdown.
-// We hook onGameExit as a belt-and-suspenders backup.
-window.onGameExit = function(){
-  console.log("[SaveSystem] onGameExit — flushing to IDB");
-  idbSync(false, function(){ console.log("[SaveSystem] flush done"); });
+window.addEventListener("beforeunload", function(){ if(gameStarted) flushToIDB(); });
+window.onGameExit = function(){ flushToIDB(); };
+setInterval(function(){ if(gameStarted) flushToIDB(); }, 30000);
+
+// ── The critical piece: mount IDBFS and populate BEFORE the game reads saves ──
+// onRuntimeInitialized fires after WASM is ready but before callMain.
+// We do the mount + IDB→FS sync here, then resolve the promise to unblock startGame.
+var _resolveModuleReady;
+var moduleReadyPromise = new Promise(function(res){ _resolveModuleReady = res; });
+
+var Module = {
+  canvas: canvas,
+  noInitialRun: true,
+  onRuntimeInitialized: function(){
+    // Mount /userdata as IDBFS
+    try{ Module.FS.mkdir(SAVE_MOUNT); }catch(e){}
+    try{
+      Module.FS.mount(Module.FS.filesystems.IDBFS, {autoPersist: true}, SAVE_MOUNT);
+    }catch(e){
+      console.error("IDBFS mount failed:", e);
+      _resolveModuleReady(); return;
+    }
+    // Populate FS from IndexedDB, THEN unblock callMain
+    setSaveStatus("⏳ Loading saves…");
+    Module.FS.syncfs(true, function(err){
+      if(err){ console.warn("IDB populate error:", err); setSaveStatus("⚠ Save load error"); }
+      else { setSaveStatus("✅ Saves loaded"); }
+      _resolveModuleReady();
+    });
+  },
+  onAbort: function(e){ console.error("WASM aborted:", e); },
+  print:    console.log,
+  printErr: console.warn
 };
 
-// Periodic flush every 30s while playing
-setInterval(function(){
-  if(gameStarted){
-    idbSync(false, function(err){
-      if(!err) setSaveStatus("✅ Auto-saved " + new Date().toLocaleTimeString());
-    });
-  }
-}, 30000);
-
-// ── Resource loading ─────────────────────────────────────────────────────────
 async function autoLoadResources(){
   try{
-    var pakResp = await fetch("main.pak");
-    if(!pakResp.ok) throw new Error("main.pak not found");
-    collectedFiles.set("main.pak", new File([await pakResp.arrayBuffer()], "main.pak"));
-
-    var props = ["partner.xml","partner.xml.sig","partner.xml.sig2","partner_logo.jpg"];
-    for(var i = 0; i < props.length; i++){
-      var resp = await fetch("properties/" + props[i]);
-      if(!resp.ok) throw new Error("properties/" + props[i] + " not found");
-      collectedFiles.set("properties/" + props[i], new File([await resp.arrayBuffer()], props[i]));
+    var r=await fetch("main.pak"); if(!r.ok) throw new Error("main.pak not found");
+    collectedFiles.set("main.pak", new File([await r.arrayBuffer()], "main.pak"));
+    var props=["partner.xml","partner.xml.sig","partner.xml.sig2","partner_logo.jpg"];
+    for(var i=0;i<props.length;i++){
+      var r2=await fetch("properties/"+props[i]); if(!r2.ok) throw new Error(props[i]+" not found");
+      collectedFiles.set("properties/"+props[i], new File([await r2.arrayBuffer()], props[i]));
     }
     startGame();
-  } catch(e){
-    document.getElementById("upload-screen").innerHTML =
-      "<p style='color:red;'>Failed to load: " + e.message + "</p>";
-    console.error(e);
+  }catch(e){
+    document.getElementById("upload-screen").innerHTML="<p style='color:red;'>Failed to load: "+e.message+"</p>";
   }
 }
 
 async function startGame(){
-  document.getElementById("upload-screen").innerHTML =
-    "<h1>PvZ Portable — Web</h1><p>Starting game…</p>";
-
-  // Switch layout
   document.body.classList.remove("upload-mode");
   document.body.classList.add("game-mode");
-  document.getElementById("upload-screen").style.display = "none";
-  document.getElementById("canvas-container").style.display = "flex";
+  document.getElementById("upload-screen").style.display="none";
+  document.getElementById("canvas-container").style.display="flex";
 
-  // Wait for Emscripten WASM to finish initialising
+  // Wait for WASM init + IDBFS mount + IDB→FS populate (all done in onRuntimeInitialized)
   await moduleReadyPromise;
 
-  // Write game asset files into Emscripten FS
-  for(var [path, file] of collectedFiles.entries()){
-    var data  = new Uint8Array(await file.arrayBuffer());
-    var parts = path.split("/");
-    var dir   = "/";
-    for(var i = 0; i < parts.length - 1; i++){
-      dir = (dir === "/" ? "" : dir) + "/" + parts[i];
-      try{ Module.FS.mkdir(dir); } catch(e){}
+  // Write game asset files
+  for(var [path,file] of collectedFiles.entries()){
+    var data=new Uint8Array(await file.arrayBuffer());
+    var parts=path.split("/"), dir="/";
+    for(var i=0;i<parts.length-1;i++){
+      dir+=(dir==="/"?"":"/")+parts[i];
+      try{Module.FS.mkdir(dir);}catch(e){}
     }
-    Module.FS.writeFile("/" + path, data);
+    Module.FS.writeFile("/"+path, data);
   }
 
-  // Create /userdata and mount IDBFS on it
-  try{ Module.FS.mkdir(SAVE_MOUNT); } catch(e){}
-  Module.FS.mount(Module.FS.filesystems.IDBFS, {}, SAVE_MOUNT);
-
-  // Populate FS from IDB BEFORE starting the game — this is the critical step.
-  // The game reads save files during startup; they must exist already.
-  setSaveStatus("⏳ Loading saves…");
-  await new Promise(function(resolve){
-    idbSync(true /* populate */, function(err){
-      if(err){
-        console.warn("[SaveSystem] IDB populate failed:", err);
-        setSaveStatus("⚠ Save load error");
-      } else {
-        setSaveStatus("✅ Saves loaded");
-      }
-      resolve(); // always proceed even on error
-    });
-  });
-
-  // Now launch the game
+  // Launch game — /userdata is already populated from IDB
   Module.callMain([]);
-  gameStarted = true;
+  gameStarted=true;
 
-  // Show save UI
-  saveBar.style.display   = "flex";
-  hoverZone.style.display = "block";
+  saveBar.style.display="flex";
+  hoverZone.style.display="block";
   showSaveBar();
   setTimeout(hideSaveBar, 4500);
 }
@@ -365,7 +262,6 @@ async function startGame(){
 autoLoadResources();
 </script>
 
-<!-- pvz-portable.js checks for a global `Module` at parse time — no async/defer -->
 <script src="pvz-portable.js"></script>
 </body>
 </html>
